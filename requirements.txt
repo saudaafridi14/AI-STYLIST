@@ -5,3 +5,4 @@ Pillow
 scikit-learn
 numpy
 pandas
+streamlit
