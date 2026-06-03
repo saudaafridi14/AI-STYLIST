@@ -1,11 +1,14 @@
 import os
 import json
+import tempfile
 import numpy as np
 import cv2
 import streamlit as st
 from PIL import Image
 import tensorflow as tf
 from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Set Streamlit Page Configuration
 st.set_page_config(
@@ -395,8 +398,8 @@ st.markdown("""
 # ---------------------
 # Paths
 # ---------------------
-MODEL_PATH = os.path.join("models", "fashion_multitask_model.h5")
-LABELS_PATH = os.path.join("models", "multitask_labels.json")
+MODEL_PATH = os.path.join(BASE_DIR, "models", "fashion_multitask_model.h5")
+LABELS_PATH = os.path.join(BASE_DIR, "models", "multitask_labels.json")
 IMG_SIZE = (224, 224)
 
 # ---------------------
@@ -426,6 +429,14 @@ def load_labels_metadata():
 model = load_fashion_model()
 metadata = load_labels_metadata()
 
+try:
+    import pyttsx3
+    voice_engine = pyttsx3.init()
+    voice_available = True
+except Exception:
+    voice_engine = None
+    voice_available = False
+
 # ---------------------
 # Helper Functions
 # ---------------------
@@ -454,6 +465,145 @@ def get_dominant_colors_swatch(pil_img, k=5):
     sorted_centers = centers[sorted_indices].astype(int)
     sorted_percentages = percentages[sorted_indices]
     return sorted_centers, sorted_percentages
+
+
+def clamp_rgb(value):
+    return int(max(0, min(255, round(value))))
+
+
+def rgb_to_hsl(rgb):
+    r, g, b = [x / 255.0 for x in rgb]
+    maxc = max(r, g, b)
+    minc = min(r, g, b)
+    l = (maxc + minc) / 2
+    if maxc == minc:
+        return 0.0, 0.0, l
+    d = maxc - minc
+    s = d / (2 - maxc - minc) if l > 0.5 else d / (maxc + minc)
+    if maxc == r:
+        h = (g - b) / d + (6 if g < b else 0)
+    elif maxc == g:
+        h = (b - r) / d + 2
+    else:
+        h = (r - g) / d + 4
+    return (h * 60) % 360, s, l
+
+
+def hsl_to_rgb(h, s, l):
+    c = (1 - abs(2 * l - 1)) * s
+    x = c * (1 - abs((h / 60) % 2 - 1))
+    m = l - c / 2
+    if h < 60:
+        r1, g1, b1 = c, x, 0
+    elif h < 120:
+        r1, g1, b1 = x, c, 0
+    elif h < 180:
+        r1, g1, b1 = 0, c, x
+    elif h < 240:
+        r1, g1, b1 = 0, x, c
+    elif h < 300:
+        r1, g1, b1 = x, 0, c
+    else:
+        r1, g1, b1 = c, 0, x
+    return clamp_rgb(r1 + m), clamp_rgb(g1 + m), clamp_rgb(b1 + m)
+
+
+def shift_hue(rgb, degrees):
+    h, s, l = rgb_to_hsl(rgb)
+    h = (h + degrees) % 360
+    return hsl_to_rgb(h, s, l)
+
+
+def rgb_to_hex(rgb):
+    return '#{:02x}{:02x}{:02x}'.format(rgb[0], rgb[1], rgb[2])
+
+
+def get_color_harmony(colors):
+    if not colors:
+        return None
+    primary = colors[0]
+    return {
+        "primary": primary,
+        "complementary": shift_hue(primary, 180),
+        "analogous": [shift_hue(primary, -30), shift_hue(primary, 30)],
+        "triadic": [shift_hue(primary, 120), shift_hue(primary, 240)],
+    }
+
+
+def generate_complete_look(style, pattern, color, budget_tier, occasion="everyday"):
+    budget_variants = {
+        "Budget Friendly": {
+            "top": "A lightweight cotton or blended fabric kurta with minimal embroidery.",
+            "bottom": "Comfortable straight trousers or plain cigarette pants.",
+            "outerwear": "A simple printed stole or shawl for layering.",
+            "shoes": "Flat sandals, cushioned loafers, or classic khussas.",
+            "accessories": "Delicate metal jewellery, simple studs, and a wallet-friendly clutch.",
+            "note": "Choose machine-washable materials and neutral trims for easy care and savings."
+        },
+        "Mid-range": {
+            "top": "A refined tailored top with subtle embroidery or tonal embellishment.",
+            "bottom": "Structured trousers, slim palazzos, or a fitted skirt depending on the outfit.",
+            "outerwear": "A soft chiffon dupatta, lightweight jacket, or statement shawl.",
+            "shoes": "Block heels, elegant mules, or premium sandals.",
+            "accessories": "Layered necklaces, statement earrings, and a polished handbag.",
+            "note": "Focus on quality fabrics and well-cut silhouettes for a polished look."
+        },
+        "Luxury": {
+            "top": "A premium silk blend top with hand-stitched details or rich embroidery.",
+            "bottom": "Tailored trousers, wide-leg pants, or premium churidar with luxe finishes.",
+            "outerwear": "A structured jacket, embellished shawl, or luxe wrap.",
+            "shoes": "Designer-inspired heels, leather loafers, or polished pumps.",
+            "accessories": "Fine jewellery, metallic accents, and a structured designer bag.",
+            "note": "Invest in statement textures and heritage-inspired details for a high-end aesthetic."
+        }
+    }
+
+    style_lower = style.lower()
+    base_recommendations = {
+        "co-ord eastern sets": "Pair the set with matching minimal jewellery and a tonal bag.",
+        "frock": "Keep the focus on the silhouette with a contrasting waist belt or clutch.",
+        "fusion wear women": "Use modern accessories like a leather belt or printed scarf to elevate the fusion look.",
+        "khaddar dresses": "Add warmth with a matching shawl and traditional footwear.",
+        "long shirts with cigarette pants": "Balance the fitted pant with a fluid, layered top and structured handbag.",
+        "office wear": "Keep styling sleek and subtle with structured pieces and minimal accents."
+    }
+
+    budget_data = budget_variants.get(budget_tier, budget_variants["Mid-range"])
+    outfit = {
+        "summary": f"A {budget_tier.lower()} {style} look for {occasion.lower()} with {color.lower()} accents.",
+        "top": budget_data["top"],
+        "bottom": budget_data["bottom"],
+        "outerwear": budget_data["outerwear"],
+        "shoes": budget_data["shoes"],
+        "accessories": budget_data["accessories"],
+        "accent": f"Use {color.lower()} highlights through accessories, shoes, or a scarf.",
+        "style_focus": base_recommendations.get(style_lower, "Choose accessories that support the outfit’s mood and occasion."),
+        "budget_note": budget_data["note"],
+        "voice_text": (
+            f"Here is your complete look suggestion: {budget_tier} {style} for {occasion}. "
+            f"Wear {budget_data['top']} with {budget_data['bottom']}. "
+            f"Add {budget_data['outerwear']} and {budget_data['shoes']}. "
+            f"Finish the outfit with {budget_data['accessories']} and {color} accents."
+        )
+    }
+    return outfit
+
+
+def synthesize_voice(text):
+    if not voice_available or voice_engine is None:
+        return None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+            path = tmp.name
+        voice_engine.save_to_file(text, path)
+        voice_engine.runAndWait()
+        with open(path, "rb") as f:
+            data = f.read()
+        os.remove(path)
+        return data
+    except Exception:
+        return None
+
 
 def get_styling_recommendations(style, pattern, color):
     recommendations = {
@@ -555,6 +705,9 @@ else:
     # Sidebar options
     st.sidebar.header("Configuration")
     st.sidebar.write("Model loaded successfully!")
+    budget_tier = st.sidebar.selectbox("Budget preference", ["Budget Friendly", "Mid-range", "Luxury"], index=1)
+    occasion = st.sidebar.selectbox("Occasion", ["Everyday", "Office", "Festive", "Party", "Travel"], index=0)
+    voice_toggle = st.sidebar.checkbox("Enable voice styling assistant", value=False)
     st.sidebar.markdown("""
     **Model Architecture:** 
     MobileNetV2 + Multi-Output Heads
@@ -564,6 +717,8 @@ else:
     2. **Pattern Type**
     3. **Dominant Color Family**
     """)
+    if voice_toggle and not voice_available:
+        st.sidebar.warning("Voice assistance is unavailable because the speech library is not installed or init failed.")
 
     # Upload and Camera input tabs
     tab1, tab2 = st.tabs(["📤  Upload Image", "📸  Take Photo"])
@@ -600,8 +755,10 @@ else:
             st.subheader("🎨 Extracted Color Palette")
             st.write("Dominant colors extracted from the clothing area using K-Means:")
 
+            dominant_palette = []
             try:
                 colors, percentages = get_dominant_colors_swatch(image, k=5)
+                dominant_palette = colors
                 swatch_html = '<div class="swatch-grid">'
                 for rgb, pct in zip(colors, percentages):
                     hex_color = '#{:02x}{:02x}{:02x}'.format(rgb[0], rgb[1], rgb[2])
@@ -672,6 +829,43 @@ else:
 
             st.markdown(f"**🎨 Color Styling Advice:** {color_tip}")
             st.markdown(f"**👕 Pattern Advice:** {pattern_tip}")
+
+            # Complete look generation
+            complete_look = generate_complete_look(pred_style, pred_pattern, pred_color, budget_tier, occasion)
+            st.markdown("""
+            <div class="card">
+                <h2>✨ Complete Look Generator</h2>
+            """, unsafe_allow_html=True)
+            st.markdown(f"**Outfit Summary:** {complete_look['summary']}")
+            st.markdown(f"- **Top:** {complete_look['top']}")
+            st.markdown(f"- **Bottom:** {complete_look['bottom']}")
+            st.markdown(f"- **Outerwear / Layer:** {complete_look['outerwear']}")
+            st.markdown(f"- **Shoes:** {complete_look['shoes']}")
+            st.markdown(f"- **Accessories:** {complete_look['accessories']}")
+            st.markdown(f"- **Accent color direction:** {complete_look['accent']}")
+            st.markdown(f"- **Budget guidance:** {complete_look['budget_note']}")
+            st.markdown(f"- **Styling focus:** {complete_look['style_focus']}")
+
+            harmony = get_color_harmony(dominant_palette)
+            if harmony is not None:
+                harmony_html = '<div style="margin-top:18px; padding:14px; border:1px solid rgba(201,169,110,0.2); border-radius:4px; background:rgba(248,244,239,0.8);">'
+                harmony_html += '<strong>Advanced Color Matching:</strong><br />'
+                harmony_html += f'Primary: <span style="font-weight:600;">{rgb_to_hex(harmony["primary"])}</span><br />'
+                harmony_html += f'Complementary: <span style="font-weight:600;">{rgb_to_hex(harmony["complementary"])}</span><br />'
+                harmony_html += f'Analogous: <span style="font-weight:600;">{rgb_to_hex(harmony["analogous"][0])}</span>, <span style="font-weight:600;">{rgb_to_hex(harmony["analogous"][1])}</span><br />'
+                harmony_html += f'Triadic: <span style="font-weight:600;">{rgb_to_hex(harmony["triadic"][0])}</span>, <span style="font-weight:600;">{rgb_to_hex(harmony["triadic"][1])}</span>'
+                harmony_html += '</div>'
+                st.markdown(harmony_html, unsafe_allow_html=True)
+
+            if voice_toggle and voice_available:
+                if st.button("🔊 Play voice styling summary"):
+                    audio_bytes = synthesize_voice(complete_look['voice_text'])
+                    if audio_bytes:
+                        st.audio(audio_bytes, format='audio/wav')
+                    else:
+                        st.warning("Unable to synthesize voice at this time.")
+
+            st.markdown('</div>', unsafe_allow_html=True)
 
             # Elegant recommendation list
             items = [

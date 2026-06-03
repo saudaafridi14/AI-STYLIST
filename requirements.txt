@@ -6,3 +6,4 @@ scikit-learn
 numpy
 pandas
 streamlit
+pyttsx3

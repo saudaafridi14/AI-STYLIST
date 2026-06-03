@@ -28,14 +28,30 @@ from sklearn.metrics import confusion_matrix, classification_report
 import itertools
 
 # ---------------------
-# Configuration
+# Configuration (CLI-friendly)
 # ---------------------
-DATA_DIR = "women"  # dataset directory with subfolders per class
-IMG_SIZE = (224, 224)
-BATCH_SIZE = 32
+import argparse
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+parser = argparse.ArgumentParser(description="Train a MobileNetV2-based classifier")
+parser.add_argument("--train-dir", default=None, help="Path to training directory")
+parser.add_argument("--val-dir", default=None, help="Path to validation directory (optional)")
+parser.add_argument("--img-size", type=int, default=224, help="Image size (square)")
+parser.add_argument("--batch-size", type=int, default=32, help="Batch size")
+parser.add_argument("--epochs", type=int, default=15, help="Initial training epochs")
+parser.add_argument("--ft-epochs", type=int, default=5, help="Fine-tuning epochs")
+parser.add_argument("--model-dir", default=None, help="Directory to save models and reports")
+parser.add_argument("--seed", type=int, default=123, help="Random seed")
+parser.add_argument("--no-finetune", action="store_true", help="Skip fine-tuning stage")
+args = parser.parse_args()
+
+TRAIN_DIR = args.train_dir or os.path.join(BASE_DIR, "dataset/train")
+VAL_DIR = args.val_dir or os.path.join(BASE_DIR, "dataset/val")
+IMG_SIZE = (args.img_size, args.img_size)
+BATCH_SIZE = args.batch_size
 VAL_SPLIT = 0.2
-SEED = 123
-MODEL_DIR = "models"
+SEED = args.seed
+MODEL_DIR = args.model_dir or os.path.join(BASE_DIR, "models")
 MODEL_PATH = os.path.join(MODEL_DIR, "fashion_model.h5")
 LABELS_PATH = os.path.join(MODEL_DIR, "labels.txt")
 HISTORY_PLOT = os.path.join(MODEL_DIR, "training_history.png")
@@ -57,24 +73,49 @@ else:
 # ---------------------
 # Load datasets
 # ---------------------
-print("Loading datasets from disk...")
-train_ds = tf.keras.preprocessing.image_dataset_from_directory(
-    DATA_DIR,
-    validation_split=VAL_SPLIT,
-    subset="training",
-    seed=SEED,
-    image_size=IMG_SIZE,
-    batch_size=BATCH_SIZE,
-)
+print(f"Loading datasets: train={TRAIN_DIR}, val={VAL_DIR}")
 
-val_ds = tf.keras.preprocessing.image_dataset_from_directory(
-    DATA_DIR,
-    validation_split=VAL_SPLIT,
-    subset="validation",
-    seed=SEED,
-    image_size=IMG_SIZE,
-    batch_size=BATCH_SIZE,
-)
+# If a separate validation directory exists, use it; otherwise use validation_split
+use_val_dir = os.path.isdir(VAL_DIR)
+if use_val_dir:
+    train_ds = tf.keras.preprocessing.image_dataset_from_directory(
+        TRAIN_DIR,
+        seed=SEED,
+        image_size=IMG_SIZE,
+        batch_size=BATCH_SIZE,
+    )
+
+    val_ds = tf.keras.preprocessing.image_dataset_from_directory(
+        VAL_DIR,
+        seed=SEED,
+        image_size=IMG_SIZE,
+        batch_size=BATCH_SIZE,
+    )
+
+    if train_ds.class_names != val_ds.class_names:
+        print("WARNING: validation directory class names do not match training directory.")
+        print("Falling back to validation split from the training directory.")
+        use_val_dir = False
+
+if not use_val_dir:
+    # fallback: single directory with validation split
+    train_ds = tf.keras.preprocessing.image_dataset_from_directory(
+        TRAIN_DIR,
+        validation_split=VAL_SPLIT,
+        subset="training",
+        seed=SEED,
+        image_size=IMG_SIZE,
+        batch_size=BATCH_SIZE,
+    )
+
+    val_ds = tf.keras.preprocessing.image_dataset_from_directory(
+        TRAIN_DIR,
+        validation_split=VAL_SPLIT,
+        subset="validation",
+        seed=SEED,
+        image_size=IMG_SIZE,
+        batch_size=BATCH_SIZE,
+    )
 
 class_names = train_ds.class_names
 num_classes = len(class_names)
@@ -84,6 +125,8 @@ print("Detected classes:", class_names)
 with open(LABELS_PATH, "w", encoding="utf-8") as f:
     for c in class_names:
         f.write(c + "\n")
+
+print(f"Classes detected ({len(class_names)}): {class_names}")
 
 # ---------------------
 # Data pipeline: augmentation and preprocessing
@@ -143,22 +186,25 @@ callbacks = [
 # ---------------------
 # Train model
 # ---------------------
-EPOCHS = 15
+EPOCHS = args.epochs
 history = model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS, callbacks=callbacks)
 
 # Optionally fine-tune: unfreeze and train a few epochs
-base_model.trainable = True
-for layer in base_model.layers[:-20]:
-    layer.trainable = False
+if not args.no_finetune and args.ft_epochs > 0:
+    base_model.trainable = True
+    for layer in base_model.layers[:-20]:
+        layer.trainable = False
 
-model.compile(
-    optimizer=tf.keras.optimizers.Adam(learning_rate=1e-5),
-    loss="sparse_categorical_crossentropy",
-    metrics=["accuracy"],
-)
+    model.compile(
+        optimizer=tf.keras.optimizers.Adam(learning_rate=1e-5),
+        loss="sparse_categorical_crossentropy",
+        metrics=["accuracy"],
+    )
 
-FT_EPOCHS = 5
-ft_history = model.fit(train_ds, validation_data=val_ds, epochs=FT_EPOCHS, callbacks=callbacks)
+    FT_EPOCHS = args.ft_epochs
+    ft_history = model.fit(train_ds, validation_data=val_ds, epochs=FT_EPOCHS, callbacks=callbacks)
+else:
+    ft_history = None
 
 # Save final model (best model already saved by checkpoint)
 model.save(MODEL_PATH)
